@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>Ma Caméra</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background-color: #000;
+      color: #fff;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    #camera-container {
+      position: relative;
+      flex: 1;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      overflow: hidden;
+    }
+    video {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+    .mirror { transform: scaleX(-1); }
+    
+    /* Filtres */
+    .filter-normal { filter: none; }
+    .filter-bw { filter: grayscale(100%) contrast(120%); }
+    .filter-vintage { filter: sepia(60%) contrast(110%) brightness(95%); }
+    .filter-vivid { filter: saturate(170%) contrast(115%); }
+
+    #filters-bar {
+      position: absolute;
+      bottom: 130px;
+      display: flex;
+      gap: 10px;
+      z-index: 10;
+      background: rgba(0, 0, 0, 0.5);
+      padding: 8px 14px;
+      border-radius: 20px;
+    }
+    .filter-btn {
+      background: transparent;
+      border: 1px solid rgba(255,255,255,0.5);
+      color: #fff;
+      padding: 5px 12px;
+      border-radius: 15px;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    .filter-btn.active {
+      background: #ffcc00;
+      color: #000;
+      border-color: #ffcc00;
+      font-weight: bold;
+    }
+
+    #controls {
+      height: 110px;
+      background: rgba(0, 0, 0, 0.85);
+      display: flex;
+      justify-content: space-around;
+      align-items: center;
+      padding-bottom: 15px;
+    }
+    #shutter-btn {
+      width: 72px;
+      height: 72px;
+      border-radius: 50%;
+      background: #fff;
+      border: 5px solid #888;
+      cursor: pointer;
+    }
+    #shutter-btn:active { transform: scale(0.92); }
+    
+    .side-btn {
+      background: rgba(255, 255, 255, 0.15);
+      border: none;
+      color: #fff;
+      width: 48px;
+      height: 48px;
+      border-radius: 50%;
+      font-size: 20px;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      cursor: pointer;
+    }
+    #preview-thumb {
+      width: 48px;
+      height: 48px;
+      border-radius: 10px;
+      border: 2px solid #fff;
+      object-fit: cover;
+      background: #222;
+    }
+
+    /* Écran d'aperçu après photo */
+    #photo-modal {
+      display: none;
+      position: fixed;
+      top: 0; left: 0; width: 100%; height: 100%;
+      background: #000;
+      z-index: 20;
+      flex-direction: column;
+      justify-content: space-between;
+      padding: 40px 20px;
+    }
+    #captured-img {
+      width: 100%;
+      max-height: 75vh;
+      object-fit: contain;
+      border-radius: 12px;
+    }
+    .modal-actions {
+      display: flex;
+      justify-content: space-around;
+      gap: 15px;
+    }
+    .action-btn {
+      flex: 1;
+      padding: 15px;
+      border-radius: 12px;
+      border: none;
+      font-size: 16px;
+      font-weight: bold;
+      cursor: pointer;
+    }
+    .btn-close { background: #333; color: #fff; }
+    .btn-save { background: #0a84ff; color: #fff; }
+    canvas { display: none; }
+  </style>
+</head>
+<body>
+
+  <div id="camera-container">
+    <video id="video" autoplay playsinline muted></video>
+    
+    <div id="filters-bar">
+      <button class="filter-btn active" onclick="setFilter('normal', this)">Normal</button>
+      <button class="filter-btn" onclick="setFilter('vivid', this)">Vif</button>
+      <button class="filter-btn" onclick="setFilter('bw', this)">N&B</button>
+      <button class="filter-btn" onclick="setFilter('vintage', this)">Vintage</button>
+    </div>
+  </div>
+
+  <div id="controls">
+    <img id="preview-thumb" src="" alt="Aperçu" onclick="openModal()" style="visibility: hidden;">
+    <button id="shutter-btn" onclick="takePhoto()"></button>
+    <button class="side-btn" onclick="switchCamera()">🔄</button>
+  </div>
+
+  <div id="photo-modal">
+    <img id="captured-img" src="" alt="Photo prise">
+    <div class="modal-actions">
+      <button class="action-btn btn-close" onclick="closeModal()">Reprendre</button>
+      <a id="download-link" download="ma-photo.png" style="flex:1; text-decoration:none;">
+        <button class="action-btn btn-save" style="width:100%;">Enregistrer</button>
+      </a>
+    </div>
+  </div>
+
+  <canvas id="canvas"></canvas>
+
+  <script>
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const capturedImg = document.getElementById('captured-img');
+    const previewThumb = document.getElementById('preview-thumb');
+    const downloadLink = document.getElementById('download-link');
+    const photoModal = document.getElementById('photo-modal');
+
+    let currentFacingMode = 'environment'; // Caméra arrière par défaut
+    let currentFilter = 'none';
+    let currentStream = null;
+
+    async function startCamera() {
+      if (currentStream) {
+        currentStream.getTracks().forEach(track => track.stop());
+      }
+      try {
+        currentStream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: currentFacingMode },
+          audio: false
+        });
+        video.srcObject = currentStream;
+        if (currentFacingMode === 'user') {
+          video.classList.add('mirror');
+        } else {
+          video.classList.remove('mirror');
+        }
+      } catch (err) {
+        alert("Autorisez l'accès à la caméra dans les réglages de Safari.");
+      }
+    }
+
+    function switchCamera() {
+      currentFacingMode = (currentFacingMode === 'environment') ? 'user' : 'environment';
+      startCamera();
+    }
+
+    function setFilter(filterName, btnElement) {
+      document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+      btnElement.classList.add('active');
+      
+      video.classList.remove('filter-normal', 'filter-bw', 'filter-vintage', 'filter-vivid');
+      video.classList.add('filter-' + filterName);
+
+      if (filterName === 'bw') currentFilter = 'grayscale(100%) contrast(120%)';
+      else if (filterName === 'vintage') currentFilter = 'sepia(60%) contrast(110%) brightness(95%)';
+      else if (filterName === 'vivid') currentFilter = 'saturate(170%) contrast(115%)';
+      else currentFilter = 'none';
+    }
+
+    function takePhoto() {
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      const ctx = canvas.getContext('2d');
+      
+      ctx.filter = currentFilter;
+      if (currentFacingMode === 'user') {
+        ctx.translate(canvas.width, 0);
+        ctx.scale(-1, 1);
+      }
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+      const dataUrl = canvas.toDataURL('image/png');
+      capturedImg.src = dataUrl;
+      previewThumb.src = dataUrl;
+      previewThumb.style.visibility = 'visible';
+      downloadLink.href = dataUrl;
+      openModal();
+    }
+
+    function openModal() { photoModal.style.display = 'flex'; }
+    function closeModal() { photoModal.style.display = 'none'; }
+
+    startCamera();
+  </script>
+</body>
+</html>
